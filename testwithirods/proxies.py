@@ -10,6 +10,7 @@ from docker.errors import NotFound
 
 from hgicommon.docker.client import create_client
 from hgicommon.helpers import create_random_string
+from testwithirods.irods_contoller import IrodsServerController
 from testwithirods.models import IrodsServer, ContainerisedIrodsServer
 
 _SHEBANG = "#!/usr/bin/env bash"
@@ -47,7 +48,7 @@ class ProxyController(metaclass=ABCMeta):
         executed within
         """
         self.cached_container_name = create_random_string(prefix="binary-container-")
-        self._irods_test_server = irods_server
+        self._irods_server = irods_server
         self._docker_image_with_binaries = image_with_real_binaries
         self._temp_directories = set()     # type: Set[str]
         atexit.register(self.tear_down)
@@ -56,6 +57,18 @@ class ProxyController(metaclass=ABCMeta):
         docker_client = create_client()
         for line in docker_client.pull(image_with_real_binaries, stream=True):
             logging.debug(line)
+
+        # FIXME: Very nasty hack to create settings volume
+        controller_cls_name = "StaticIrods%sServerController" % str(self._irods_server.version).replace(".", "_")
+        module = __import__("testwithirods.irods_%s_controller" % self._irods_server.version.major, fromlist=[controller_cls_name])
+        controller = getattr(module, controller_cls_name)     # type: IrodsServerController
+        temp_directory = tempfile.mkdtemp(prefix="irods-settings", dir="/tmp")
+        self._temp_directories.add(temp_directory)
+        if self._irods_server.version.major == 3:
+            controller.write_connection_settings(os.path.join(temp_directory, ".irodsEnv"), self._irods_server)
+        else:
+            controller.write_connection_settings(os.path.join(temp_directory, "irods_environment.json"), self._irods_server)
+        self._settings_directory = temp_directory
 
     def tear_down(self):
         """
@@ -112,7 +125,7 @@ class ProxyController(metaclass=ABCMeta):
         :param flags: other flags to use in Docker run (will not use pre-running container if set)
         :return: the created command
         """
-        if self._irods_test_server.host == "localhost" or self._irods_test_server.host == "127.0.0.1":
+        if self._irods_server.host == "localhost" or self._irods_server.host == "127.0.0.1":
             raise ValueError("Cannot connect to iRODS test server running on localhost - "
                              "address is not usable inside Docker container.")
 
@@ -120,17 +133,22 @@ class ProxyController(metaclass=ABCMeta):
         to_execute = "\"%s\" %s" % (binary_to_execute_in_docker, arguments)
 
         other_flags_set = flags != ""
-        if isinstance(self._irods_test_server, ContainerisedIrodsServer):
-            flags = "--link %s:%s %s" % (self._irods_test_server.name, self._irods_test_server.name, flags)
+        if isinstance(self._irods_server, ContainerisedIrodsServer):
+            flags = "--link %s:%s %s" % (self._irods_server.name, self._irods_server.name, flags)
             # TODO: Changing this is probably wrong
-            self._irods_test_server.host = self._irods_test_server.name
-            self._irods_test_server.port = 1247
+            self._irods_server.host = self._irods_server.name
+            self._irods_server.port = 1247
 
-        assert self._irods_test_server.host is not None
-        assert isinstance(self._irods_test_server.port, int)
+        assert self._irods_server.host is not None
+        assert isinstance(self._irods_server.port, int)
 
         if other_flags_set:
-            return self._create_docker_run_command(to_execute, flags)
+            return """
+                echo "%s" | %s
+            """ % (
+                self._irods_server.users[0].password,
+                self._create_docker_run_command(to_execute, flags)
+            )
         else:
             flags = "--name %s -d %s -i" % (self.cached_container_name, flags)
             return ProxyController._reduce_whitespace("""
@@ -144,6 +162,7 @@ class ProxyController(metaclass=ABCMeta):
                         if ! isRunning
                         then
                             %(container_setup)s > /dev/null
+                            docker exec -i %(uuid)s iinit %(password)s
                         fi
                     }
                     lock=".%(uuid)s.lock"
@@ -172,6 +191,7 @@ class ProxyController(metaclass=ABCMeta):
                 docker exec -i %(uuid)s %(to_execute)s
             """ % {
                 "uuid": self.cached_container_name,
+                "password": self._irods_server.users[0].password,
                 "container_setup": self._create_docker_run_command("bash", flags),
                 "to_execute": to_execute
             })
@@ -183,24 +203,16 @@ class ProxyController(metaclass=ABCMeta):
         :param other: other flags to use in Docker run
         :return: the created command
         """
-        user = self._irods_test_server.users[0]
+        user = self._irods_server.users[0]
 
         return ProxyController._reduce_whitespace("""
                 docker run \
-                    -e IRODS_HOST='%(host)s' \
-                    -e IRODS_PORT=%(port)d \
-                    -e IRODS_ZONE='%(zone)s' \
-                    -e IRODS_USERNAME='%(username)s' \
-                    -e IRODS_PASSWORD='%(password)s' \
+                    -v %(settings)s:/root/.irods \
                     %(other)s \
                     %(image)s \
                     %(command)s
         """ % {
-            "host": self._irods_test_server.host,
-            "port": self._irods_test_server.port,
-            "zone": user.zone,
-            "username": user.username,
-            "password": user.password,
+            "settings": self._settings_directory,
             "other": other,
             "image": self._docker_image_with_binaries,
             "command": command

@@ -36,7 +36,7 @@ class Irods4ServerController(IrodsServerController, metaclass=ABCMeta):
         }
         config_as_json = json.dumps(config)
         logging.debug("Writing iRODS connection config to: %s" % file_location)
-        with open(file_location, 'w') as settings_file:
+        with open(file_location, "w") as settings_file:
             settings_file.write(config_as_json)
 
     def _wait_for_start(self, container: ContainerisedIrodsServer) -> bool:
