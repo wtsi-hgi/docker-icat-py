@@ -1,3 +1,14 @@
+***
+
+__Deprecated: please use [Use In Test](https://github.com/wtsi-hgi/useintest) instead, which has a [predefined setup for 
+iRODS](http://useintest.readthedocs.io/en/latest/predefined/#irods).__
+
+***
+
+&nbsp;
+
+
+
 [![Build Status](https://travis-ci.org/wtsi-hgi/test-with-irods.svg)](https://travis-ci.org/wtsi-hgi/test-with-irods)
 [![codecov.io](https://codecov.io/github/wtsi-hgi/test-with-irods/coverage.svg?branch=master)](https://codecov.io/github/wtsi-hgi/test-with-irods?branch=master)
 
